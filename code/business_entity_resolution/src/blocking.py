@@ -19,11 +19,15 @@ RE_WORD = re.compile(r"\w+")
 
 def extract_name_tokens(norm_name: str) -> List[str]:
     """Extract significant name tokens, omitting common generic entity stopwords."""
+    if not norm_name or not isinstance(norm_name, str):
+        return []
     words = [w.lower() for w in RE_WORD.findall(norm_name) if len(w) >= 2]
     return [w for w in words if w not in CONFIG.name_stopwords]
 
 def extract_addr_tokens(norm_address: str) -> List[str]:
     """Extract significant address tokens, omitting common street type stopwords."""
+    if not norm_address or not isinstance(norm_address, str):
+        return []
     words = [w.lower() for w in RE_WORD.findall(norm_address) if len(w) >= 2]
     return [w for w in words if w not in CONFIG.addr_stopwords]
 
@@ -43,15 +47,16 @@ class CountryCandidateIndex:
         """Build multi-strategy indices over target candidate records."""
         # Pass 1: compute address token frequency to identify rare distinctive tokens
         for rec in records.values():
-            a_tokens = extract_addr_tokens(rec["norm_address"])
+            a_tokens = extract_addr_tokens(rec.get("norm_address") or "")
             for t in set(a_tokens):
                 if len(t) >= 4 and not t.isdigit():
                     self.addr_token_counts[t] += 1
 
         # Pass 2: populate inverted indices
         for mid, rec in records.items():
-            n_tokens = extract_name_tokens(rec["raw_name"])
-            raw_a_tokens = [w.lower() for w in RE_WORD.findall(rec["raw_addr"]) if len(w) >= 2]
+            n_tokens = extract_name_tokens(rec.get("raw_name") or "")
+            raw_addr = rec.get("raw_addr") or ""
+            raw_a_tokens = [w.lower() for w in RE_WORD.findall(raw_addr) if len(w) >= 2]
             a_tokens = [w for w in raw_a_tokens if w not in CONFIG.addr_stopwords]
             words = [tok for tok in a_tokens if not tok.isdigit() and len(tok) >= 3]
             
@@ -85,8 +90,9 @@ class CountryCandidateIndex:
         """
         Query candidate indices for a Source 1 entity and union candidate IDs across strategies.
         """
-        n_tokens = extract_name_tokens(rec["raw_name"])
-        raw_a_tokens = [w.lower() for w in RE_WORD.findall(rec["raw_addr"]) if len(w) >= 2]
+        n_tokens = extract_name_tokens(rec.get("raw_name") or "")
+        raw_addr = rec.get("raw_addr") or ""
+        raw_a_tokens = [w.lower() for w in RE_WORD.findall(raw_addr) if len(w) >= 2]
         a_tokens = [w for w in raw_a_tokens if w not in CONFIG.addr_stopwords]
         words = [tok for tok in a_tokens if not tok.isdigit() and len(tok) >= 3]
         street_nums = [tok for tok in raw_a_tokens if tok.isdigit() or (tok[:-1].isdigit() and tok[-1].isalpha())]

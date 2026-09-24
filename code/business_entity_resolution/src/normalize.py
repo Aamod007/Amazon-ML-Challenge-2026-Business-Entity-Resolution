@@ -6,8 +6,10 @@ bidirectional legal-suffix canonicalization, and structured subfield extraction
 Preserves raw originals while producing normalized artifacts.
 """
 
+import math
 import re
 import unicodedata
+from typing import Dict, Any, List
 try:
     from .config import CONFIG
 except ImportError:
@@ -140,15 +142,21 @@ def normalize_address(raw_address: str) -> Dict[str, Any]:
 def normalize_record(record_tuple: tuple) -> Dict[str, Any]:
     """
     Normalize an entity record tuple (entity_id, business_name, business_address, country).
+    Handles None, NaN, and non-string inputs safely to prevent NoneType errors in downstream stages.
     """
-    eid, raw_name, raw_addr, country = record_tuple
-    name_info = normalize_name(raw_name)
-    addr_info = normalize_address(raw_addr)
+    eid, raw_name, raw_addr, country = record_tuple[0], record_tuple[1], record_tuple[2], record_tuple[3]
+    eid_str = str(eid).strip() if eid is not None else ""
+    raw_name_str = str(raw_name).strip() if (raw_name is not None and not (isinstance(raw_name, float) and math.isnan(raw_name))) else ""
+    raw_addr_str = str(raw_addr).strip() if (raw_addr is not None and not (isinstance(raw_addr, float) and math.isnan(raw_addr))) else ""
+    country_str = str(country).strip() if (country is not None and not (isinstance(country, float) and math.isnan(country))) else ""
+
+    name_info = normalize_name(raw_name_str)
+    addr_info = normalize_address(raw_addr_str)
     return {
-        "entity_id": eid,
-        "raw_name": raw_name,
-        "raw_addr": raw_addr,
-        "country": country,
+        "entity_id": eid_str,
+        "raw_name": raw_name_str,
+        "raw_addr": raw_addr_str,
+        "country": country_str,
         **name_info,
         **addr_info
     }
