@@ -1,0 +1,19 @@
+# Dataset files (large files > 1 GB)
+student_resource/dataset/
+dataset/
+*.tsv.gz
+*.tar.gz
+*.zip
+
+# OS and Cache files
+.DS_Store
+__MACOSX/
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+*.log
+
+# Git LFS or large outputs (>100MB)
+output/candidate_pairs.tsv
+student_resource/output/candidate_pairs.tsv
