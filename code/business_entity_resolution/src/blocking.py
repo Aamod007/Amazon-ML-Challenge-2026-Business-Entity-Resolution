@@ -34,16 +34,20 @@ def extract_addr_tokens(norm_address: str) -> List[str]:
 class CountryCandidateIndex:
     """
     Candidate blocking index constructed over Source 2 and Source 3 records for a single country.
+    Supports multi-script ASCII transliteration blocking and bounded inverted index pruning.
     """
-    def __init__(self, country: str):
+    def __init__(self, country: str, max_freq: int = None):
         self.country = country
+        self.max_freq = max_freq or CONFIG.max_block_token_frequency
         self.idx_name_token = defaultdict(list)
+        self.idx_ascii_token = defaultdict(list)
         self.idx_addr_num_word = defaultdict(list)
         self.idx_addr_pair = defaultdict(list)
         self.idx_prefix = defaultdict(list)
+        self.idx_postal_num = defaultdict(list)
         self.addr_token_counts = Counter()
 
-    def build(self, records: Dict[str, Dict[str, Any]]):
+    def build(self, records: Dict[str, Any]):
         """Build multi-strategy indices over target candidate records."""
         # Pass 1: compute address token frequency to identify rare distinctive tokens
         for rec in records.values():
@@ -55,23 +59,37 @@ class CountryCandidateIndex:
         # Pass 2: populate inverted indices
         for mid, rec in records.items():
             n_tokens = extract_name_tokens(rec.get("raw_name") or "")
+            ascii_tokens = extract_name_tokens(rec.get("ascii_name") or "")
             raw_addr = rec.get("raw_addr") or ""
             raw_a_tokens = [w.lower() for w in RE_WORD.findall(raw_addr) if len(w) >= 2]
             a_tokens = [w for w in raw_a_tokens if w not in CONFIG.addr_stopwords]
             words = [tok for tok in a_tokens if not tok.isdigit() and len(tok) >= 3]
             
-            # Strategy 1: Name tokens
+            # Strategy 1: Raw Name tokens
             for tok in n_tokens:
                 if len(tok) >= CONFIG.min_token_len:
                     self.idx_name_token[tok].append(mid)
 
+            # Strategy 1b: Transliterated ASCII Name tokens (cross-script bridge)
+            for tok in ascii_tokens:
+                if len(tok) >= CONFIG.min_token_len and tok not in n_tokens:
+                    self.idx_ascii_token[tok].append(mid)
+
             # Strategy 2: Street number + first street word prefix
-            street_nums = [tok for tok in raw_a_tokens if tok.isdigit() or (tok[:-1].isdigit() and tok[-1].isalpha())]
-            clean_nums = [re.sub(r"[^\d]", "", tok) for tok in street_nums if re.sub(r"[^\d]", "", tok)]
-            if clean_nums and words:
-                s_num = clean_nums[0]
-                for w in words[:3]:
+            s_num = str(rec.get("street_num") or "").strip()
+            if not s_num:
+                street_nums = [tok for tok in raw_a_tokens if tok.isdigit() or (tok[:-1].isdigit() and tok[-1].isalpha())]
+                clean_nums = [re.sub(r"[^\d]", "", tok) for tok in street_nums if re.sub(r"[^\d]", "", tok)]
+                if clean_nums:
+                    s_num = clean_nums[0]
+            if s_num and words:
+                for w in words[:2]:
                     self.idx_addr_num_word[(s_num, w[:4])].append(mid)
+
+            # Strategy 2b: Postal code + street number (exact location anchor)
+            p_code = str(rec.get("postal_code") or "").strip()
+            if p_code and s_num:
+                self.idx_postal_num[(p_code, s_num)].append(mid)
 
             # Strategy 3: Address distinctive token-pairs
             rare_words = sorted([w for w in words if len(w) >= 4], key=lambda w: self.addr_token_counts[w])
@@ -83,51 +101,81 @@ class CountryCandidateIndex:
                     self.idx_addr_pair[(w1, w3)].append(mid)
 
             # Strategy 4: Name prefix + address prefix
-            if n_tokens and words:
-                self.idx_prefix[(n_tokens[0][:4], words[0][:3])].append(mid)
+            if (n_tokens or ascii_tokens) and words:
+                first_name_tok = (ascii_tokens or n_tokens)[0]
+                self.idx_prefix[(first_name_tok[:4], words[0][:3])].append(mid)
 
-    def query(self, rec: Dict[str, Any], max_candidates: int = 50) -> Set[str]:
+    def query(self, rec: Any, max_candidates: int = None) -> Set[str]:
         """
-        Query candidate indices for a Source 1 entity and union candidate IDs across strategies.
+        Query candidate indices for a Source 1 entity with bounded frequency pruning across all channels.
         """
+        max_cands = max_candidates or CONFIG.max_candidates_per_entity
         n_tokens = extract_name_tokens(rec.get("raw_name") or "")
+        ascii_tokens = extract_name_tokens(rec.get("ascii_name") or "")
         raw_addr = rec.get("raw_addr") or ""
         raw_a_tokens = [w.lower() for w in RE_WORD.findall(raw_addr) if len(w) >= 2]
         a_tokens = [w for w in raw_a_tokens if w not in CONFIG.addr_stopwords]
         words = [tok for tok in a_tokens if not tok.isdigit() and len(tok) >= 3]
-        street_nums = [tok for tok in raw_a_tokens if tok.isdigit() or (tok[:-1].isdigit() and tok[-1].isalpha())]
-        clean_nums = [re.sub(r"[^\d]", "", tok) for tok in street_nums if re.sub(r"[^\d]", "", tok)]
+        
+        s_num = str(rec.get("street_num") or "").strip()
+        if not s_num:
+            street_nums = [tok for tok in raw_a_tokens if tok.isdigit() or (tok[:-1].isdigit() and tok[-1].isalpha())]
+            clean_nums = [re.sub(r"[^\d]", "", tok) for tok in street_nums if re.sub(r"[^\d]", "", tok)]
+            if clean_nums:
+                s_num = clean_nums[0]
+                
+        p_code = str(rec.get("postal_code") or "").strip()
 
         candidates = set()
 
-        # Strategy 1: Name tokens (skip explosive high-frequency blocks)
+        # Strategy 1: Raw Name tokens (bounded frequency)
         for tok in n_tokens:
             if len(tok) >= CONFIG.min_token_len:
                 matches = self.idx_name_token.get(tok, [])
-                if len(matches) <= CONFIG.max_block_token_frequency:
+                if len(matches) <= self.max_freq:
                     candidates.update(matches)
 
-        # Strategy 2: Street number + word prefix
-        if clean_nums and words:
-            s_num = clean_nums[0]
-            for w in words[:3]:
-                candidates.update(self.idx_addr_num_word.get((s_num, w[:4]), []))
+        # Strategy 1b: Transliterated ASCII tokens (bounded frequency)
+        for tok in ascii_tokens:
+            if len(tok) >= CONFIG.min_token_len:
+                matches = self.idx_ascii_token.get(tok, [])
+                if len(matches) <= self.max_freq:
+                    candidates.update(matches)
 
-        # Strategy 3: Address distinctive pairs
+        # Strategy 2: Street number + word prefix (bounded frequency)
+        if s_num and words:
+            for w in words[:2]:
+                matches = self.idx_addr_num_word.get((s_num, w[:4]), [])
+                if len(matches) <= self.max_freq:
+                    candidates.update(matches)
+
+        # Strategy 2b: Postal code + Street number (bounded frequency)
+        if p_code and s_num:
+            matches = self.idx_postal_num.get((p_code, s_num), [])
+            if len(matches) <= self.max_freq:
+                candidates.update(matches)
+
+        # Strategy 3: Address distinctive pairs (bounded frequency)
         rare_words = sorted([w for w in words if len(w) >= 4], key=lambda w: self.addr_token_counts[w])
         if len(rare_words) >= 2:
             w1, w2 = sorted([rare_words[0], rare_words[1]])
-            candidates.update(self.idx_addr_pair.get((w1, w2), []))
+            matches = self.idx_addr_pair.get((w1, w2), [])
+            if len(matches) <= self.max_freq:
+                candidates.update(matches)
             if len(rare_words) >= 3:
                 w1, w3 = sorted([rare_words[0], rare_words[2]])
-                candidates.update(self.idx_addr_pair.get((w1, w3), []))
+                matches = self.idx_addr_pair.get((w1, w3), [])
+                if len(matches) <= self.max_freq:
+                    candidates.update(matches)
 
-        # Strategy 4: Name prefix + locality prefix
-        if n_tokens and words:
-            candidates.update(self.idx_prefix.get((n_tokens[0][:4], words[0][:3]), []))
+        # Strategy 4: Name prefix + locality prefix (bounded frequency)
+        if (n_tokens or ascii_tokens) and words:
+            first_name_tok = (ascii_tokens or n_tokens)[0]
+            matches = self.idx_prefix.get((first_name_tok[:4], words[0][:3]), [])
+            if len(matches) <= self.max_freq:
+                candidates.update(matches)
 
         # Cap candidates per entity to avoid runaway combinatorial evaluation
-        if len(candidates) > max_candidates:
-            # Keep a prioritized subset
-            return set(list(candidates)[:max_candidates])
+        if len(candidates) > max_cands:
+            return set(list(candidates)[:max_cands])
         return candidates

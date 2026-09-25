@@ -57,7 +57,7 @@ class PipelineConfig:
         "eurl": "eurl", "e.u.r.l.": "eurl",
         "snc": "snc", "s.n.c.": "snc",
         "ste": "societe", "societe": "societe", "société": "societe",
-        # Indian Languages (Hindi / Devanagari)
+        # Indian Languages (Hindi / Devanagari & Transliterated Latin)
         "प्राइवेट लिमिटेड": "private limited",
         "प्रा. लि.": "private limited",
         "प्रा लि": "private limited",
@@ -66,6 +66,12 @@ class PipelineConfig:
         "एलएलपी": "llp",
         "कंपनी": "company",
         "कम्पनी": "company",
+        "praivet limited": "private limited",
+        "praivet": "private",
+        "elelpi": "llp",
+        "limitted": "limited",
+        "kampani": "company",
+        "kompani": "company",
     })
     
     landmark_keywords: List[str] = field(default_factory=lambda: [
@@ -88,21 +94,22 @@ class PipelineConfig:
     })
 
     # -------------------------------------------------------------------------
-    # Blocking Hyperparameters
+    # Blocking Hyperparameters (Bounded for high precision & memory safety)
     # -------------------------------------------------------------------------
-    max_candidates_per_entity: int = 40
-    max_block_token_frequency: int = 350
+    max_candidates_per_entity: int = 15
+    max_block_token_frequency: int = 120
     min_token_len: int = 3
 
     # -------------------------------------------------------------------------
-    # Model Hyperparameters (XGBoost - Apache 2.0 License)
+    # Model Hyperparameters (Compact, fast XGBoost - Apache 2.0 License)
     # -------------------------------------------------------------------------
-    n_estimators: int = 120
-    max_depth: int = 6
+    sample_train_entities: int = 20000
+    n_estimators: int = 80
+    max_depth: int = 4
     learning_rate: float = 0.1
-    subsample: float = 0.85
+    subsample: float = 0.8
     colsample_bytree: float = 0.85
-    scale_pos_weight: float = 35.0
+    scale_pos_weight: float = 25.0
     random_state: int = 42
     n_jobs: int = -1
     tree_method: str = "hist"
@@ -111,7 +118,7 @@ class PipelineConfig:
     # -------------------------------------------------------------------------
     # Decision Threshold & Global Consistency Post-Processing
     # -------------------------------------------------------------------------
-    decision_threshold: float = 0.940
+    decision_threshold: float = 0.930
     use_global_consistency: bool = True
     
     # -------------------------------------------------------------------------

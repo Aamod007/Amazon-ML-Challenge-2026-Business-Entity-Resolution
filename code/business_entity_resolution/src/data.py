@@ -23,22 +23,26 @@ def load_ground_truth(gt_path: str) -> Tuple[Dict[str, Set[str]], List[str]]:
     Treats empty matched_entity_ids as an explicit singleton label, not missing data.
     """
     print(f"Loading ground truth from: {gt_path}")
-    gt_df = pd.read_csv(gt_path, sep="\t", dtype=str)
-    gt_df["matched_entity_ids"] = gt_df["matched_entity_ids"].fillna("")
-    
     true_matches = {}
     all_s1_ids = []
     
-    for _, row in gt_df.iterrows():
-        s1 = str(row["source1_entity_id"]).strip()
-        all_s1_ids.append(s1)
-        raw_mids = str(row["matched_entity_ids"]).strip()
-        if raw_mids:
-            mids = set(m.strip() for m in raw_mids.split(",") if m.strip())
-        else:
-            mids = set()
-        true_matches[s1] = mids
-        
+    with open(gt_path, "r", encoding="utf-8") as f:
+        header = f.readline().strip().split("\t")
+        id_idx = header.index("source1_entity_id")
+        match_idx = header.index("matched_entity_ids")
+        for line in f:
+            parts = line.rstrip("\r\n").split("\t")
+            if not parts or not parts[0]:
+                continue
+            s1 = parts[id_idx].strip()
+            all_s1_ids.append(s1)
+            if len(parts) > match_idx and parts[match_idx].strip():
+                raw_mids = parts[match_idx].strip()
+                mids = set(m.strip() for m in raw_mids.split(",") if m.strip())
+            else:
+                mids = set()
+            true_matches[s1] = mids
+            
     singletons = sum(1 for mids in true_matches.values() if len(mids) == 0)
     print(f"Parsed {len(all_s1_ids):,} S1 entities: {singletons:,} singletons ({singletons/len(all_s1_ids)*100:.2f}%)")
     return true_matches, all_s1_ids

@@ -92,21 +92,23 @@ def train_pipeline(
 
     # 2. Load and normalize S1 records
     print("Loading and normalizing Source 1 records...")
+    import polars as pl
     s1_records = {}
-    for raw_tuple in stream_tsv_records(s1_file):
-        if raw_tuple[0] in sampled_s1:
-            s1_records[raw_tuple[0]] = normalize_record(raw_tuple)
-            if len(s1_records) == len(sampled_s1):
-                break
+    df_s1 = pl.read_csv(s1_file, separator="\t")
+    for row in df_s1.filter(pl.col("entity_id").is_in(list(sampled_s1))).iter_rows():
+        s1_records[row[0]] = normalize_record(row)
 
     # 3. Load candidate pool (true matches + background records for realistic negative training)
     print("Loading candidate pool from Source 2 and Source 3...")
     pool_records = {}
+    max_bg = 40000
     for src_file in [s2_file, s3_file]:
-        for raw_tuple in stream_tsv_records(src_file):
-            eid = raw_tuple[0]
-            if eid in target_match_ids or len(pool_records) < 180000:
-                pool_records[eid] = normalize_record(raw_tuple)
+        df_src = pl.read_csv(src_file, separator="\t")
+        targets_df = df_src.filter(pl.col("entity_id").is_in(list(target_match_ids)))
+        bg_df = df_src.head(max_bg)
+        comb_df = pl.concat([targets_df, bg_df]).unique(subset=["entity_id"])
+        for row in comb_df.iter_rows():
+            pool_records[row[0]] = normalize_record(row)
 
     print(f"Candidate pool loaded: {len(pool_records):,} records.")
 
@@ -201,6 +203,7 @@ def run_test_inference(
     print("STAGE 8: GENERATING SUBMISSION OUTPUT FILES ON TEST SET")
     print("="*70)
     
+    import gc
     os.makedirs(output_dir, exist_ok=True)
     matching_out_path = os.path.join(output_dir, config.output_matching_file)
     candidate_out_path = os.path.join(output_dir, config.output_candidate_file)
@@ -235,7 +238,7 @@ def run_test_inference(
     final_candidates = {s1: [] for s1 in s1_test_order}
     final_matches = {s1: [] for s1 in s1_test_order}
     
-    # Process country by country to maintain low memory footprint (< 3 GB RAM)
+    # Process country by country to maintain low memory footprint (< 2 GB RAM)
     for c_idx, country in enumerate(sorted(test_countries), 1):
         print(f"\n--- Processing Country [{c_idx}/{len(test_countries)}]: {country} ---")
         t0 = time.time()
@@ -275,9 +278,13 @@ def run_test_inference(
             for mid in cand_list:
                 rec2 = pool_country_recs.get(mid)
                 if rec2 is not None:
-                    feats = compute_pair_features(rec1, rec2)
-                    batch_pairs.append(feats)
-                    batch_meta.append((s1_id, mid))
+                    # Fast-path: exact matching on name and address directly assigns prob 1.0
+                    if rec1["norm_name"] == rec2["norm_name"] and rec1["norm_address"] == rec2["norm_address"]:
+                        s1_cand_probs[s1_id].append((mid, 1.0))
+                    else:
+                        feats = compute_pair_features(rec1, rec2)
+                        batch_pairs.append(feats)
+                        batch_meta.append((s1_id, mid))
                     
             if len(batch_pairs) >= config.batch_size or idx == total_s1 - 1:
                 if batch_pairs:
@@ -288,8 +295,11 @@ def run_test_inference(
                     batch_pairs = []
                     batch_meta = []
                     
-            if (idx + 1) % 50000 == 0 or idx == total_s1 - 1:
-                print(f"  Processed {idx + 1:,} / {total_s1:,} S1 entities in {time.time() - t0:.1f}s...")
+            if (idx + 1) % 25000 == 0 or idx == total_s1 - 1:
+                elapsed = time.time() - t0
+                rate = (idx + 1) / max(elapsed, 0.1)
+                rem_s = (total_s1 - (idx + 1)) / max(rate, 1)
+                print(f"  Processed {idx + 1:,} / {total_s1:,} S1 entities ({rate:.1f} ent/s, ETA: {rem_s/60:.1f}m)...")
 
         # Apply Global Consistency (Stage 7) if enabled
         if config.use_global_consistency:
@@ -310,11 +320,12 @@ def run_test_inference(
 
         print(f"Completed {country} processing in {time.time() - t0:.2f}s.")
         
-        # Free country memory
+        # Free country memory immediately
         del s1_country_recs
         del pool_country_recs
         del c_index
         del s1_cand_probs
+        gc.collect()
 
     # 2. Write output files strictly tab-separated
     print(f"\nWriting {candidate_out_path}...")
