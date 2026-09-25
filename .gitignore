@@ -13,6 +13,8 @@ __pycache__/
 *$py.class
 .ipynb_checkpoints/
 *.log
+catboost_info/
+
 
 # Git LFS or large outputs (>100MB)
 output/candidate_pairs.tsv

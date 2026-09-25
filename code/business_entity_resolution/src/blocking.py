@@ -45,6 +45,7 @@ class CountryCandidateIndex:
         self.idx_addr_pair = defaultdict(list)
         self.idx_prefix = defaultdict(list)
         self.idx_postal_num = defaultdict(list)
+        self.idx_name_digits = defaultdict(list)
         self.addr_token_counts = Counter()
 
     def build(self, records: Dict[str, Any]):
@@ -74,6 +75,11 @@ class CountryCandidateIndex:
             for tok in ascii_tokens:
                 if len(tok) >= CONFIG.min_token_len and tok not in n_tokens:
                     self.idx_ascii_token[tok].append(mid)
+
+            # Strategy 1c: Distinctive Name Digits (e.g. Local 579, Studio 54)
+            name_d = "".join(re.findall(r"\d+", rec.get("raw_name") or ""))
+            if len(name_d) >= 2:
+                self.idx_name_digits[name_d].append(mid)
 
             # Strategy 2: Street number + first street word prefix
             s_num = str(rec.get("street_num") or "").strip()
@@ -107,7 +113,8 @@ class CountryCandidateIndex:
 
     def query(self, rec: Any, max_candidates: int = None) -> Set[str]:
         """
-        Query candidate indices for a Source 1 entity with bounded frequency pruning across all channels.
+        Query candidate indices with multi-strategy TF-IDF weighted ranking.
+        Prioritizes candidates with high multi-channel agreement and rare distinctive tokens.
         """
         max_cands = max_candidates or CONFIG.max_candidates_per_entity
         n_tokens = extract_name_tokens(rec.get("raw_name") or "")
@@ -125,57 +132,80 @@ class CountryCandidateIndex:
                 s_num = clean_nums[0]
                 
         p_code = str(rec.get("postal_code") or "").strip()
+        cand_scores = Counter()
 
-        candidates = set()
-
-        # Strategy 1: Raw Name tokens (bounded frequency)
+        # Strategy 1: Raw Name tokens (inverse-frequency weighted)
         for tok in n_tokens:
             if len(tok) >= CONFIG.min_token_len:
                 matches = self.idx_name_token.get(tok, [])
                 if len(matches) <= self.max_freq:
-                    candidates.update(matches)
+                    w = 12.0 / (len(matches) + 1.0)
+                    for mid in matches:
+                        cand_scores[mid] += w
 
-        # Strategy 1b: Transliterated ASCII tokens (bounded frequency)
+        # Strategy 1b: Transliterated ASCII tokens
         for tok in ascii_tokens:
             if len(tok) >= CONFIG.min_token_len:
                 matches = self.idx_ascii_token.get(tok, [])
                 if len(matches) <= self.max_freq:
-                    candidates.update(matches)
+                    w = 10.0 / (len(matches) + 1.0)
+                    for mid in matches:
+                        cand_scores[mid] += w
 
-        # Strategy 2: Street number + word prefix (bounded frequency)
+        # Strategy 1c: Distinctive Name Digits (e.g. Local 579)
+        name_d = "".join(re.findall(r"\d+", rec.get("raw_name") or ""))
+        if len(name_d) >= 2:
+            matches = self.idx_name_digits.get(name_d, [])
+            if len(matches) <= self.max_freq:
+                w = 15.0 / (len(matches) + 1.0)
+                for mid in matches:
+                    cand_scores[mid] += w
+
+        # Strategy 2: Street number + word prefix
         if s_num and words:
             for w in words[:2]:
                 matches = self.idx_addr_num_word.get((s_num, w[:4]), [])
                 if len(matches) <= self.max_freq:
-                    candidates.update(matches)
+                    w = 15.0 / (len(matches) + 1.0)
+                    for mid in matches:
+                        cand_scores[mid] += w
 
-        # Strategy 2b: Postal code + Street number (bounded frequency)
+        # Strategy 2b: Postal code + Street number (highest location precision)
         if p_code and s_num:
             matches = self.idx_postal_num.get((p_code, s_num), [])
             if len(matches) <= self.max_freq:
-                candidates.update(matches)
+                w = 20.0 / (len(matches) + 1.0)
+                for mid in matches:
+                    cand_scores[mid] += w
 
-        # Strategy 3: Address distinctive pairs (bounded frequency)
+        # Strategy 3: Address distinctive pairs
         rare_words = sorted([w for w in words if len(w) >= 4], key=lambda w: self.addr_token_counts[w])
         if len(rare_words) >= 2:
             w1, w2 = sorted([rare_words[0], rare_words[1]])
             matches = self.idx_addr_pair.get((w1, w2), [])
             if len(matches) <= self.max_freq:
-                candidates.update(matches)
+                w = 12.0 / (len(matches) + 1.0)
+                for mid in matches:
+                    cand_scores[mid] += w
             if len(rare_words) >= 3:
                 w1, w3 = sorted([rare_words[0], rare_words[2]])
                 matches = self.idx_addr_pair.get((w1, w3), [])
                 if len(matches) <= self.max_freq:
-                    candidates.update(matches)
+                    w = 10.0 / (len(matches) + 1.0)
+                    for mid in matches:
+                        cand_scores[mid] += w
 
-        # Strategy 4: Name prefix + locality prefix (bounded frequency)
+        # Strategy 4: Name prefix + locality prefix
         if (n_tokens or ascii_tokens) and words:
             first_name_tok = (ascii_tokens or n_tokens)[0]
             matches = self.idx_prefix.get((first_name_tok[:4], words[0][:3]), [])
             if len(matches) <= self.max_freq:
-                candidates.update(matches)
+                w = 8.0 / (len(matches) + 1.0)
+                for mid in matches:
+                    cand_scores[mid] += w
 
-        # Cap candidates per entity to avoid runaway combinatorial evaluation
-        if len(candidates) > max_cands:
-            return set(list(candidates)[:max_cands])
-        return candidates
+        # Return top candidates ranked by composite strategy score
+        if len(cand_scores) <= max_cands:
+            return set(cand_scores.keys())
+        return set(mid for mid, _ in cand_scores.most_common(max_cands))
+

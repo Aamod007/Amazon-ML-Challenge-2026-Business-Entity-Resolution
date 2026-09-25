@@ -96,29 +96,42 @@ class PipelineConfig:
     # -------------------------------------------------------------------------
     # Blocking Hyperparameters (Bounded for high precision & memory safety)
     # -------------------------------------------------------------------------
-    max_candidates_per_entity: int = 15
-    max_block_token_frequency: int = 120
+    max_candidates_per_entity: int = 20
+    max_block_token_frequency: int = 150
     min_token_len: int = 3
 
+
     # -------------------------------------------------------------------------
-    # Model Hyperparameters (Compact, fast XGBoost - Apache 2.0 License)
+    # Model Hyperparameters (Tri-Model Ensemble: XGBoost + LightGBM + CatBoost)
     # -------------------------------------------------------------------------
+    architecture: str = "ensemble"  # "ensemble", "xgboost", "lightgbm", "catboost"
     sample_train_entities: int = 20000
-    n_estimators: int = 80
-    max_depth: int = 4
-    learning_rate: float = 0.1
-    subsample: float = 0.8
-    colsample_bytree: float = 0.85
-    scale_pos_weight: float = 25.0
+    sample_val_entities: int = 4000
+    n_cv_folds: int = 5  # 5-fold GroupKFold cross-validation
+    imbalance_strategy: str = "sqrt_ratio"  # "sqrt_ratio", "full_ratio", "none"
+    
+    n_estimators: int = 100
+    max_depth: int = 5
+    learning_rate: float = 0.08
+    subsample: float = 0.85
+    colsample_bytree: float = 0.80
     random_state: int = 42
     n_jobs: int = -1
     tree_method: str = "hist"
     device: str = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") or os.path.exists("/kaggle") else "cpu"
     
+    ensemble_weights: Dict[str, float] = field(default_factory=lambda: {
+        "xgboost": 0.40,
+        "lightgbm": 0.35,
+        "catboost": 0.25
+    })
+    use_fold_averaging: bool = False
+    experiments_dir: str = "experiments"
+
     # -------------------------------------------------------------------------
     # Decision Threshold & Global Consistency Post-Processing
     # -------------------------------------------------------------------------
-    decision_threshold: float = 0.930
+    decision_threshold: float = 0.850
     use_global_consistency: bool = True
     
     # -------------------------------------------------------------------------
@@ -128,3 +141,4 @@ class PipelineConfig:
     verbose: bool = True
 
 CONFIG = PipelineConfig()
+

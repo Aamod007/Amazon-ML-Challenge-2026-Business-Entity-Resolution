@@ -1,9 +1,12 @@
-numpy==2.4.2
-pandas==3.0.3
+numpy>=2.0.0
+pandas>=2.0.0
 polars>=1.44.0
-scipy==1.17.1
-scikit-learn==1.9.0
-xgboost==3.4.1
-rapidfuzz==3.14.6
+scipy>=1.15.0
+scikit-learn>=1.6.0
+xgboost>=3.0.0
+lightgbm>=4.0.0
+catboost>=1.2.0
+rapidfuzz>=3.10.0
 anyascii>=0.3.3
+
 

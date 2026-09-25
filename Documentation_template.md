@@ -14,6 +14,8 @@ This submission presents an end-to-end, reproducible, 100% offline machine learn
 ## 2. Methodology
 
 ### 2.1 Problem Analysis
+- **Official Dataset Link (Google Drive Mirror):** [Amazon ML Challenge 2026 Dataset](https://drive.google.com/drive/folders/1L21j0i0xjc14bRVLgL0Be40Ijz1_MiQv?usp=sharing)
+
 During exploratory data analysis across the 2.2M reference entities and 10.3M source fragments, we identified seven fundamental noise archetypes and key structural properties:
 1. **Singleton Dominance & Evaluation Dynamics:** Exactly **5.58%** (123,247 / 2,206,821) of Source 1 entities have zero true matches in Source 2/3. Predicting an empty list on singletons earns a score of 1.0, while false merges earn 0.0. The trivial baseline of predicting all singletons yields a macro $F_{0.5}$ of **0.05585**.
 2. **Cardinality Law:** In the ground truth, exactly **0.00%** of Source 2 or Source 3 fragments are associated with multiple Source 1 entities (strictly 1-to-at-most-1 cardinality).
@@ -54,70 +56,96 @@ To reduce the $1.73\text{M} \times 9.97\text{M} \approx 17.2\text{ Trillion}$ te
 
 ## 4. Matching Model
 
-### Features Used (27 Deterministic, Country-Agnostic Signals):
+### Features Used (55 Deterministic, Country-Agnostic Signals):
 1. **Name Similarity Features:**
    - Levenshtein ratio (`rapidfuzz.fuzz.ratio`)
    - Partial ratio (`rapidfuzz.fuzz.partial_ratio`)
    - Token sort ratio (`rapidfuzz.fuzz.token_sort_ratio`) — word-order invariant
    - Token set ratio (`rapidfuzz.fuzz.token_set_ratio`) — substring containment
-   - Root name ratio (similarity after stripping legal suffixes)
-   - Character 3-gram Jaccard similarity
-   - Exact match boolean flag (`norm_name_1 == norm_name_2`)
-   - Root exact match boolean flag
+   - Jaro-Winkler similarity (`rapidfuzz.distance.JaroWinkler.similarity`) — prefix-weighted similarity
+   - Root name ratio & root name Jaro-Winkler (after stripping legal designations)
+   - Transliterated ASCII token sort ratio & root sort ratio (cross-script Indic-Latin bridge)
+   - First-token brand exact match, fuzzy ratio, and Jaro-Winkler
+   - Name token overlap coefficient $\frac{|T_1 \cap T_2|}{\min(|T_1|, |T_2|)}$ and word Jaccard
+   - Character 2-gram and 3-gram Jaccard similarities
+   - Exact match boolean flag (`norm_name_1 == norm_name_2`) & root exact match flag
    - 3-character prefix match flag
    - Name length difference & length ratio
+   - Business name digit exact match, mismatch, and signed flags (e.g. `Local 579`, `Studio 54`)
 2. **Legal Suffix Agreement:**
    - Both entities have legal suffix flag
-   - Legal suffix exact match flag (canonical expansion via lookup table)
+   - Legal suffix exact match flag (canonical expansion via multilingual lookup table)
 3. **Address Similarity Features:**
-   - Full address Levenshtein ratio
-   - Address partial ratio
-   - Address token sort ratio
-   - Address token set ratio (vital for sparse vs complete address matching)
-   - Address word-level Jaccard similarity
-   - Address character 3-gram Jaccard similarity
+   - Full address Levenshtein ratio & partial ratio
+   - Address token sort ratio & token set ratio
+   - Address Jaro-Winkler similarity
+   - Address word-level Jaccard similarity & token overlap coefficient
+   - Address character 2-gram and 3-gram Jaccard similarities
    - Address length difference
 4. **Structured Subfield Agreement Flags:**
-   - Postal / PIN code exact match flag (`1.0` if both non-empty and equal, `0.0` otherwise)
-   - Postal code mismatch flag (`1.0` if both non-empty and unequal, `0.0` otherwise)
-   - Street number exact match flag
-   - Street number mismatch flag
+   - Postal / PIN code exact match, mismatch, and signed flags
+   - Postal code hierarchical prefix matches: prefix-3 (district/metro level) and prefix-2 (state/region level)
+   - Street number exact match, mismatch, and signed flags
+   - Logarithmic street number distance: $\ln(1 + |\text{num}_1 - \text{num}_2|)$
    - Landmark match flag (similarity on isolated landmark string $> 80\%$)
-5. **Composite Interaction Features:**
+   - Domain / website string inclusion flag
+5. **Nonlinear Interaction & Composite Signals:**
    - Harmonic mean of name and address token set ratios: $\frac{2 \times S_{\text{name}} \times S_{\text{addr}}}{S_{\text{name}} + S_{\text{addr}} + \epsilon}$
+   - Weakest-link minimum: $\min(S_{\text{name}}, S_{\text{addr}})$
+   - Product interaction: $(S_{\text{name}} \times S_{\text{addr}}) / 10000$
+   - Disagreement penalty: $|S_{\text{name}} - S_{\text{addr}}|$
+   - Maximum name similarity across raw, root, and transliterated representations
+   - Weighted composite alignment score ($0.45 \times S_{\text{name}} + 0.45 \times S_{\text{addr}} + 10.0 \times \text{postal\_exact}$)
    - High dual similarity boolean indicator ($S_{\text{name}} \ge 80 \land S_{\text{addr}} \ge 80$)
 
 ### Model Architecture & Hyperparameters:
-- **Model Type:** Pairwise Gradient Boosted Decision Trees via **XGBoost (Apache-2.0 License)**.
-- **Complexity:** 120 trees, max depth = 6, learning rate = 0.1, subsample = 0.85, colsample_bytree = 0.85. Total parameter count is $< 50,000$ tree decision nodes (well within the $\le 8\text{B}$ parameter limit).
-- **Validation Splitting:** 3-Fold `GroupKFold` grouped strictly by Source 1 entity ID, ensuring that candidate pairs for any reference entity never appear in both training and validation folds.
-- **Imbalance Handling:** Implemented via `scale_pos_weight = N_neg / N_pos` (~15.4 to 35.0), preserving true underlying probability ranking without synthetic undersampling distortion.
-- **Top 5 Feature Importances:**
-  1. `addr_token_set` (0.8664) — strongest predictor of physical co-location.
-  2. `root_name_ratio` (0.0217) — isolates primary brand identity from legal designations.
-  3. `addr_word_jaccard` (0.0203) — penalizes contradictory street names.
-  4. `name_token_sort` (0.0150) — handles transposed brand terms.
-  5. `street_num_mismatch` (0.0129) — penalizes mismatched building numbers.
+- **Model Type:** Tri-Model Gradient Boosted Ensemble combining:
+  1. **XGBoost (Apache-2.0 License):** Depth-wise histogram splitting (weight: 0.40).
+  2. **LightGBM (MIT License):** Leaf-wise / best-first gradient-based one-side sampling (weight: 0.35).
+  3. **CatBoost (Apache-2.0 License):** Oblivious / symmetric decision trees (weight: 0.25).
+- **Ensemble Parameter Count:** ~10,000 tree decision nodes combined ($< 0.0001\%$ of the $\le 8\text{B}$ constraint).
+- **Validation Splitting:** 5-Fold `GroupKFold` grouped strictly by Source 1 entity ID, ensuring that candidate pairs for any reference entity never appear in both training and validation folds.
+- **Imbalance Handling:** Calibrated square-root ratio weighting ($\text{scale\_pos\_weight} \approx 3.13$), preventing sigmoid probability saturation and preserving smooth probability ranking for threshold optimization.
+- **Top Feature Importances:**
+  1. `addr_token_set` (0.6410) — strongest predictor of physical co-location.
+  2. `addr_word_jaccard` (0.0884) — penalizes contradictory street names.
+  3. `name_token_sort` (0.0345) — handles transposed brand terms.
+  4. `root_name_ratio` (0.0312) — isolates core brand identity from corporate suffixes.
+  5. `harmonic_name_addr` (0.0270) — enforces balanced name and address agreement.
 
 ### Decision Threshold Selection & Singleton Handling:
 - The decision threshold was tuned via grid sweep on out-of-fold validation predictions directly maximizing macro-averaged $F_{0.5}$:
 $$F_{0.5} = \frac{1.25 \times \text{Precision} \times \text{Recall}}{0.25 \times \text{Precision} + \text{Recall}}$$
 - Singletons score 1.0 when predicted empty and 0.0 otherwise.
-- Because $F_{0.5}$ penalizes false positives twice as heavily as false negatives ($\beta = 0.5$), the metric rewards conservative, high-precision boundaries.
-- Optimal threshold: **$\tau^* = 0.940 - 0.950$**.
+- Optimal global decision threshold: **$\tau^* = 0.830$**.
 - Entities with no surviving candidates above $\tau^*$ are explicitly designated as singletons (empty list).
 
 ---
 
 ## 5. Results & Error Analysis
 
-- **Macro $F_{0.5}$ Score on Held-Out Validation:**
-  - **Trivial Baseline (Predict All Empty):** **0.05585**
-  - **Model Out-of-Fold Macro $F_{0.5}$:** **0.96494**
-  - **Net Gain Over Baseline:** **+0.90909 (+1,627% relative improvement)**
-- **Stage 7 Global Consistency Impact:**
-  - Before Conflict Resolution: Macro $F_{0.5} = 0.96494$ (several S2/S3 fragments claimed by $>1$ S1 entity).
-  - After Global Consistency Resolution: Macro $F_{0.5} = \mathbf{0.96512}$ (+0.00018 improvement, 0 multi-merge violations).
+- **5-Fold Cross-Validation Scores (GroupKFold):**
+  - Fold 1: **0.97626**
+  - Fold 2: **0.96968**
+  - Fold 3: **0.97877**
+  - Fold 4: **0.97454**
+  - Fold 5: **0.96782**
+  - **5-Fold Mean Macro $F_{0.5}$:** **0.97342 $\pm$ 0.00409**
+- **Model Comparison on Complete Out-of-Fold Predictions:**
+  - XGBoost OOF Macro $F_{0.5}$: **0.97262**
+  - LightGBM OOF Macro $F_{0.5}$: **0.97254**
+  - CatBoost OOF Macro $F_{0.5}$: **0.97220**
+  - **Tri-Model Ensemble OOF Macro $F_{0.5}$:** **0.97292** (outperforms every individual model)
+- **Held-Out Official-Structure Validation Benchmark:**
+  - **Trivial Baseline (Predict All Empty):** **0.05541**
+  - **Candidate Blocking Recall Ceiling:** **96.01%** (5,048 / 5,258 true pairs captured)
+  - **Before Global Consistency:** Macro $F_{0.5} = \mathbf{0.97928}$
+  - **After Stage 7 Global Consistency Resolution:** Macro $F_{0.5} = \mathbf{0.98006}$ (+0.00078 net lift)
+  - **Singleton Accuracy (83 singletons):** **97.59%**
+  - **Non-Singleton Entity $F_{0.5}$ (1,415 entities):** **98.03%**
+  - **Net Gain Over Baseline:** **+0.92465 (+1,668.8% relative improvement)**
+- **Automated Experiment Tracking:**
+  - Every run is automatically logged into `experiments/experiment_tracker.csv` and `experiments/experiment_log.json` for full auditability and leaderboard iteration tracking.
 - **Common False Positives (Wrong Merges):**
   - Multi-tenant commercial complexes or corporate parks where unrelated businesses share the exact same address string (street number, locality, PIN code) and have generic words in their name (e.g. `Apex Solutions` vs `Apex Services`).
 - **Common False Negatives (Missed Matches):**
@@ -126,22 +154,25 @@ $$F_{0.5} = \frac{1.25 \times \text{Precision} \times \text{Recall}}{0.25 \times
 ---
 
 ## 6. Conclusion
-The developed business entity resolution pipeline delivers a robust, scalable, and fully reproducible solution strictly compliant with all competition constraints. By combining multi-strategy country-partitioned blocking, high-throughput feature extraction, an Apache-2.0 XGBoost classifier, and domain-grounded global consistency post-processing, the pipeline achieves an out-of-fold validation macro $F_{0.5}$ of **0.96512**, outperforming the trivial singleton baseline by over $1,600\%$.
+The developed business entity resolution pipeline delivers a robust, scalable, and fully reproducible solution strictly compliant with all competition constraints. By systematically implementing all 6 competitive development pillars — leakage-free official-structure data splitting, 55-dimensional deterministic feature engineering, calibrated class imbalance weighting, 5-fold GroupKFold cross-validation, automated experiment tracking, and a Tri-Model Ensemble (XGBoost + LightGBM + CatBoost) with Stage 7 Global Consistency post-processing — the pipeline achieves a 5-fold CV macro $F_{0.5}$ of **0.97342** and a held-out validation macro $F_{0.5}$ of **0.98006**, comfortably exceeding the 92% competitive threshold.
+
 
 ---
 
 ## Appendix
 
-### A. Code Artefacts
+### A. Code Artefacts & Dataset Source
+- **Official Dataset Link (Google Drive Mirror):** [Amazon ML Challenge 2026 Dataset](https://drive.google.com/drive/folders/1L21j0i0xjc14bRVLgL0Be40Ijz1_MiQv?usp=sharing)
 - **Complete Source Code:** Located under `code/business_entity_resolution/src/`:
   - `config.py`: Centralized configuration, paths, and hyperparameters.
   - `normalize.py`: Unicode decomposition, legal suffix mapping, and address decomposition.
   - `blocking.py`: Multi-strategy country-partitioned inverted indices.
-  - `features.py`: Deterministic 27-dimensional pairwise feature extraction.
-  - `model.py`: XGBoost matching classifier with GroupKFold cross-validation.
+  - `features.py`: Deterministic 55-dimensional pairwise feature extraction.
+  - `model.py`: Tri-model ensemble matching classifier with GroupKFold cross-validation.
   - `evaluate.py`: Macro $F_{0.5}$ metric computation and threshold sweeping.
   - `consistency.py`: Stage 7 global consistency conflict resolution.
-  - `pipeline.py`: Master CLI pipeline (`--mode all`, `--mode train`, `--mode inference`, `--mode validate`).
+  - `tracker.py`: Automated experiment tracking (CSV spreadsheet + JSON log).
+  - `pipeline.py`: Master CLI pipeline (`--mode all`, `--mode train`, `--mode inference`, `--mode validate`, `--mode track`).
 - **Jupyter Notebook:** `business_entity_resolution_pipeline.ipynb` containing the interactive, step-by-step walkthrough.
 - **Reproduction Command:**
   ```bash
@@ -151,8 +182,11 @@ The developed business entity resolution pipeline delivers a robust, scalable, a
 ### B. License & Parameter Verification
 | Component | Artifact Name | License | Parameter Count |
 | :--- | :--- | :--- | :--- |
-| Gradient Boosting | `xgboost` (v3.4.1) | **Apache-2.0** | ~40,000 decision nodes ($< 0.00005\text{B}$) |
+| Gradient Boosting (Depth-wise) | `xgboost` (v3.4.1) | **Apache-2.0** | ~3,500 decision nodes ($< 0.000005\text{B}$) |
+| Gradient Boosting (Leaf-wise) | `lightgbm` (v4.7.0) | **MIT** | ~3,100 decision nodes ($< 0.000005\text{B}$) |
+| Gradient Boosting (Oblivious) | `catboost` (v1.2.10) | **Apache-2.0** | ~3,840 decision nodes ($< 0.000005\text{B}$) |
 | String Distance C++ | `rapidfuzz` (v3.14.6) | **MIT** | 0 (algorithmic / non-parametric) |
 | Data Processing | `polars` (v1.44.2) | **MIT** | 0 (algorithmic) |
 | Machine Learning Utilities | `scikit-learn` (v1.9.0) | **BSD-3-Clause** | 0 (algorithmic) |
-| **Total Pipeline Parameters** | — | **Apache-2.0 / MIT** | **$< 0.00005\text{B} \ll 8\text{B}$ constraint** |
+| **Total Pipeline Parameters** | — | **Apache-2.0 / MIT** | **$< 0.000015\text{B} \ll 8\text{B}$ constraint** |
+
