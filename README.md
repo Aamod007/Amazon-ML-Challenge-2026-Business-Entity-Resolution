@@ -79,7 +79,7 @@ Amazon-ML-Challenge-2026-Business-Entity-Resolution/
 ├── README.md                                 # Root project documentation & overview
 ├── Documentation_template.md                 # Official methodology template for final submission
 ├── PIPELINE_ARCHITECTURE_AND_DATASET_GUIDE.md# Complete architectural manual & dataset guide
-├── amazonml.ipynb                            # Interactive, GPU/local ready Jupyter Notebook
+├── business_entity_resolution_pipeline.ipynb # Interactive, GPU/local ready competition notebook
 ├── code/                                     # Official submission code directory
 │   └── business_entity_resolution/
 │       ├── README.md                         # Reproduction guide and CLI documentation
@@ -177,7 +177,7 @@ python code/business_entity_resolution/src/pipeline.py --mode all
 ### 4. Interactive Jupyter Notebook
 An interactive walkthrough ready for local machines or Kaggle GPU instances (T4 / P100 / A100) is located at:
 ```bash
-jupyter notebook amazonml.ipynb
+jupyter notebook business_entity_resolution_pipeline.ipynb
 ```
 
 ---

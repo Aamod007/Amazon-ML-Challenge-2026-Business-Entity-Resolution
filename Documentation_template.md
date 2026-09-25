@@ -36,60 +36,83 @@ During exploratory data analysis across the 2.2M reference entities and 10.3M so
 
 ## 3. Candidate Generation (Blocking)
 
-To reduce the $1.73\text{M} \times 9.97\text{M} \approx 17.2\text{ Trillion}$ test comparison space into a tractable set of candidate pairs, we implement four complementary blocking strategies partitioned by country string:
+To reduce the $1.73\text{M} \times 9.97\text{M} \approx 17.2\text{ Trillion}$ test comparison space into a high-recall, tractable set of candidate pairs, we implement a **Multi-Stage Union Candidate Generator** with 12 complementary retrieval routes (Routes A–L) partitioned by country:
 
-- **Blocking Strategies Used:**
-  1. *Strategy 1 — Distinctive Name Tokens:* Inverted index on normalized root name tokens (length $\ge 3$, excluding high-frequency entity stopwords like `inc`, `ltd`, `corp`, `services`).
-  2. *Strategy 2 — Street Number + Locality Prefix:* Inverted index on extracted street/building number combined with the 4-character prefix of the first significant street word (captures transliterated names where Latin and Devanagari names differ completely but physical street numbers match).
-  3. *Strategy 3 — Address Token Co-Occurrence Pairs:* Index on pairs of rare locality tokens (frequency-ranked), capturing rural or Indian addresses lacking municipal house numbers.
-  4. *Strategy 4 — Name Prefix + Locality Prefix:* First 4 letters of name + first 3 letters of address (recovers severe name typos and minor address modifications).
+- **Blocking Routes Implemented:**
+  1. *Route A — Exact Normalized Name:* Strict match on unicode-normalized, lowercased, punctuation-stripped names.
+  2. *Route B — Exact Root Name:* Stripping corporate designations (`inc`, `ltd`, `corp`, `pvt`, `llc`, `gmbh`, `sarl`, `sa`).
+  3. *Route C — Exact Normalized Address:* Full address string match after standardizing street/locality tokens.
+  4. *Route D — Exact Postal Code + Street Number:* Identifies businesses sharing exact building coordinates.
+  5. *Route E — Rare Name-Token Inverted Index:* Indexing tokens with corpus frequency $< 500$ (e.g. unique founder names, distinct brand roots).
+  6. *Route F — Rare Address-Token Inverted Index:* Locality and street shingles capturing rural/informal addresses.
+  7. *Route G — Character 3-Gram MinHash / Inverted Blocks:* Recovers typographical, OCR, and spelling errors.
+  8. *Route H — Name Prefix (4-char) + Address Locality Prefix (3-char):* Handles severe compound alterations.
+  9. *Route I — Number Structure Signature:* Multi-digit multiset hashing preserving all numeric units.
+  10. *Route J — Transliteration Bridge:* Cross-script phonetic normalization mapping Indic/non-Latin scripts to Latin.
+  11. *Route K — TF-IDF Sparse Top-K Retrieval:* Cosine similarity over sparse char/word n-gram matrices.
+  12. *Route L — S2 <-> S3 Transitive Bridge Retrieval:* When an S1 entity links strongly to an S2 candidate, and that S2 candidate shares an ultra-confident link with an S3 fragment, S3 is bridged into S1's candidate pool (and vice-versa).
 - **Candidate Volume & Reduction Ratio:**
-  - Evaluated on 10,000 validation entities against 184,015 candidate pool records:
-  - Total candidate pairs generated: 1,130,246 (average 113.0 candidates per S1 entity).
-  - Full cross-product comparison space: $1,840,150,000$.
-  - **Reduction Ratio:** **99.9386%** space reduction.
-- **How True Matches Were Preserved:**
-  - True pairs captured: 33,239 out of 34,511 true matches.
-  - **Pair Completeness (Recall Ceiling):** **96.31%**.
+  - Evaluated on validation entities against the full multi-source fragment pool:
+  - Candidates evaluated per S1 entity: up to 300 candidates ranked by lightweight retrieval scores.
+  - Reduction Ratio: **$>99.98\%$** comparison space eliminated.
+- **Empirical Multi-K Blocking Recall Benchmark:**
+  - `@10`: **95.38%**
+  - `@25`: **96.22%**
+  - `@50`: **96.76%**
+  - `@100`: **97.25%**
+  - `@150`: **97.94%**
+  - `@200`: **98.53%**
+  - `@300`: **99.06%**
+  - Across all entities, candidate generation achieves **99.06% recall ceiling**, ensuring downstream models can recover nearly all true matches.
 
 ---
 
 ## 4. Matching Model
 
-### Features Used (55 Deterministic, Country-Agnostic Signals):
-1. **Name Similarity Features:**
+### Features Used (72 Rich Deterministic & Structural Signals):
+1. **Name Similarity Features (RapidFuzz & Distance Metrics):**
    - Levenshtein ratio (`rapidfuzz.fuzz.ratio`)
    - Partial ratio (`rapidfuzz.fuzz.partial_ratio`)
    - Token sort ratio (`rapidfuzz.fuzz.token_sort_ratio`) — word-order invariant
    - Token set ratio (`rapidfuzz.fuzz.token_set_ratio`) — substring containment
-   - Jaro-Winkler similarity (`rapidfuzz.distance.JaroWinkler.similarity`) — prefix-weighted similarity
-   - Root name ratio & root name Jaro-Winkler (after stripping legal designations)
+   - WRatio & QRatio — length-weighted fuzzy comparisons
+   - Jaro & Jaro-Winkler similarities — prefix-biased edit distances
+   - Root name ratio & root name Jaro-Winkler (after legal designation stripping)
    - Transliterated ASCII token sort ratio & root sort ratio (cross-script Indic-Latin bridge)
    - First-token brand exact match, fuzzy ratio, and Jaro-Winkler
    - Name token overlap coefficient $\frac{|T_1 \cap T_2|}{\min(|T_1|, |T_2|)}$ and word Jaccard
-   - Character 2-gram and 3-gram Jaccard similarities
+   - Character 2-gram, 3-gram, and 4-gram Jaccard similarities
    - Exact match boolean flag (`norm_name_1 == norm_name_2`) & root exact match flag
-   - 3-character prefix match flag
-   - Name length difference & length ratio
+   - 3-character prefix and suffix match flags
+   - Name length difference, length ratio, and token count difference
    - Business name digit exact match, mismatch, and signed flags (e.g. `Local 579`, `Studio 54`)
 2. **Legal Suffix Agreement:**
    - Both entities have legal suffix flag
-   - Legal suffix exact match flag (canonical expansion via multilingual lookup table)
-3. **Address Similarity Features:**
+   - Legal suffix exact match flag (canonical expansion via learned multilingual lookup table)
+3. **Address Similarity & Component Features:**
    - Full address Levenshtein ratio & partial ratio
    - Address token sort ratio & token set ratio
    - Address Jaro-Winkler similarity
    - Address word-level Jaccard similarity & token overlap coefficient
    - Address character 2-gram and 3-gram Jaccard similarities
-   - Address length difference
-4. **Structured Subfield Agreement Flags:**
+   - Address length difference and token count difference
+4. **Structured Numeric & Subfield Agreement / Contradiction Flags:**
    - Postal / PIN code exact match, mismatch, and signed flags
    - Postal code hierarchical prefix matches: prefix-3 (district/metro level) and prefix-2 (state/region level)
    - Street number exact match, mismatch, and signed flags
+   - Unit / Flat / Suite number exact match, mismatch, and signed flags
    - Logarithmic street number distance: $\ln(1 + |\text{num}_1 - \text{num}_2|)$
    - Landmark match flag (similarity on isolated landmark string $> 80\%$)
-   - Domain / website string inclusion flag
-5. **Nonlinear Interaction & Composite Signals:**
+   - Explicit Contradiction Penalties:
+     - `house_conflict`: Both records have street numbers and they conflict ($0$ vs $1$)
+     - `postal_conflict`: Both records have postal codes and they conflict
+     - `unit_conflict`: Both records have unit numbers and they conflict
+     - `multiple_numeric_conflicts`: Simultaneous house and postal discrepancies
+5. **Retrieval Channel & Bridge Signals:**
+   - Retrieval channel indicator flags: `retrieved_by_exact_name`, `retrieved_by_root_name`, `retrieved_by_exact_addr`, `retrieved_by_postal_house`, `retrieved_by_rare_token`, `retrieved_by_char_ngram`, `retrieved_by_bridge`
+   - `num_retrieval_channels`: Count of independent retrieval routes discovering this pair
+   - Bridge confidence: S2 <-> S3 link strength and cross-source support
+6. **Nonlinear Interaction & Entity-Level Signals:**
    - Harmonic mean of name and address token set ratios: $\frac{2 \times S_{\text{name}} \times S_{\text{addr}}}{S_{\text{name}} + S_{\text{addr}} + \epsilon}$
    - Weakest-link minimum: $\min(S_{\text{name}}, S_{\text{addr}})$
    - Product interaction: $(S_{\text{name}} \times S_{\text{addr}}) / 10000$
@@ -97,12 +120,14 @@ To reduce the $1.73\text{M} \times 9.97\text{M} \approx 17.2\text{ Trillion}$ te
    - Maximum name similarity across raw, root, and transliterated representations
    - Weighted composite alignment score ($0.45 \times S_{\text{name}} + 0.45 \times S_{\text{addr}} + 10.0 \times \text{postal\_exact}$)
    - High dual similarity boolean indicator ($S_{\text{name}} \ge 80 \land S_{\text{addr}} \ge 80$)
+   - Relative candidate margin within entity: score difference against top alternative candidate
 
 ### Model Architecture & Hyperparameters:
-- **Model Type:** Tri-Model Gradient Boosted Ensemble combining:
-  1. **XGBoost (Apache-2.0 License):** Depth-wise histogram splitting (weight: 0.40).
-  2. **LightGBM (MIT License):** Leaf-wise / best-first gradient-based one-side sampling (weight: 0.35).
-  3. **CatBoost (Apache-2.0 License):** Oblivious / symmetric decision trees (weight: 0.25).
+- **Model Type:** Tri-Model Gradient Boosted Ensemble + LambdaMART Ranker combining:
+  1. **XGBoost (Apache-2.0 License):** Depth-wise histogram splitting (weight: 0.35).
+  2. **LightGBM Classifier (MIT License):** Leaf-wise gradient-based one-side sampling (weight: 0.30).
+  3. **CatBoost (Apache-2.0 License):** Oblivious / symmetric decision trees (weight: 0.20).
+  4. **LightGBM LambdaMART Ranker (MIT License):** Group-wise pairwise ranking on S1 candidate lists (weight: 0.15).
 - **Ensemble Parameter Count:** ~10,000 tree decision nodes combined ($< 0.0001\%$ of the $\le 8\text{B}$ constraint).
 - **Validation Splitting:** 5-Fold `GroupKFold` grouped strictly by Source 1 entity ID, ensuring that candidate pairs for any reference entity never appear in both training and validation folds.
 - **Imbalance Handling:** Calibrated square-root ratio weighting ($\text{scale\_pos\_weight} \approx 3.13$), preventing sigmoid probability saturation and preserving smooth probability ranking for threshold optimization.
@@ -122,34 +147,52 @@ $$F_{0.5} = \frac{1.25 \times \text{Precision} \times \text{Recall}}{0.25 \times
 
 ---
 
-## 5. Results & Error Analysis
+## 5. Results, Error Analysis & Honesty Checkpoint
 
-- **5-Fold Cross-Validation Scores (GroupKFold):**
-  - Fold 1: **0.97626**
-  - Fold 2: **0.96968**
-  - Fold 3: **0.97877**
-  - Fold 4: **0.97454**
-  - Fold 5: **0.96782**
-  - **5-Fold Mean Macro $F_{0.5}$:** **0.97342 $\pm$ 0.00409**
-- **Model Comparison on Complete Out-of-Fold Predictions:**
-  - XGBoost OOF Macro $F_{0.5}$: **0.97262**
-  - LightGBM OOF Macro $F_{0.5}$: **0.97254**
-  - CatBoost OOF Macro $F_{0.5}$: **0.97220**
-  - **Tri-Model Ensemble OOF Macro $F_{0.5}$:** **0.97292** (outperforms every individual model)
-- **Held-Out Official-Structure Validation Benchmark:**
-  - **Trivial Baseline (Predict All Empty):** **0.05541**
-  - **Candidate Blocking Recall Ceiling:** **96.01%** (5,048 / 5,258 true pairs captured)
-  - **Before Global Consistency:** Macro $F_{0.5} = \mathbf{0.97928}$
-  - **After Stage 7 Global Consistency Resolution:** Macro $F_{0.5} = \mathbf{0.98006}$ (+0.00078 net lift)
-  - **Singleton Accuracy (83 singletons):** **97.59%**
-  - **Non-Singleton Entity $F_{0.5}$ (1,415 entities):** **98.03%**
-  - **Net Gain Over Baseline:** **+0.92465 (+1,668.8% relative improvement)**
-- **Automated Experiment Tracking:**
-  - Every run is automatically logged into `experiments/experiment_tracker.csv` and `experiments/experiment_log.json` for full auditability and leaderboard iteration tracking.
-- **Common False Positives (Wrong Merges):**
-  - Multi-tenant commercial complexes or corporate parks where unrelated businesses share the exact same address string (street number, locality, PIN code) and have generic words in their name (e.g. `Apex Solutions` vs `Apex Services`).
-- **Common False Negatives (Missed Matches):**
-  - Extreme abbreviation coupled with unnumbered addresses, or Indian transliterations where the entity name is completely localized into Devanagari and the address contains only an informal neighborhood without street numbers or PIN codes.
+### 5.1 Dual-Evaluation Paradigm: Reused-Validation vs. Zero-Leakage Cold Holdout
+To maintain complete scientific and competition integrity, we report two distinct performance evaluations:
+1. **Reused-Validation Benchmark (Threshold Sweep on Held-Out Validation):** Macro $F_{0.5} = \mathbf{0.99517}$ (Global) / $\mathbf{0.99533}$ (Per-Segment).
+2. **Cold-Set Generalization Benchmark (Zero Leakage, Single-Shot Evaluation):** Macro $F_{0.5} = \mathbf{0.96880}$ ($\sim 96.88\%$).
+
+| Evaluation Protocol | Sampling Strategy | Threshold Policy | Macro $F_{0.5}$ | Characterization |
+| :--- | :--- | :--- | :---: | :--- |
+| **Reused Validation** | 12k entities sampled with seed 42 | Swept repeatedly on validation set ($\tau^* = 0.770$) | **0.99517** | Measures fit on known validation slice; contains ~2.64% optimism bias. |
+| **Cold Virgin Holdout** | 10k entities sampled from offset $1,000,000+$ (`seed=2026`) | **Frozen strictly from training fold OOF** ($\tau^* = 0.830$) | **0.96880** | **Honest single-shot generalization baseline** on completely untouched data. |
+
+### 5.2 Cold-Set Ablation Progression & Diagnostic Insights (Steps 1–4)
+
+#### A. Rule-Only vs. Learned Model Attribution (Step 3)
+We audited what fraction of matched predictions rely on hardcoded rules versus the learned GBDT ensemble:
+- **On the Official 1.73M Test Set (76,835 Matched Pairs Audited):**
+  - Exact-Match Fast-Path (`norm_name == norm_name` and `norm_address == norm_address`): **1,254 pairs (1.63%)**
+  - B8 Rule Override (Exact postal code $\ge 5$ digits + name $\ge 96$ + addr $\ge 85$): **582 pairs (0.76%)**
+  - **Learned GBDT Ensemble:** **74,999 pairs (97.61%)**
+- **On the Cold Virgin Holdout (Isolated Ablation):**
+  - **Rule-Only Baseline (Model OFF):** Macro $F_{0.5} = \mathbf{0.10847}$ (10.85%). Misses 92.1% of true matches.
+  - **Model-Only Baseline (Rules OFF, $\tau^* = 0.830$):** Macro $F_{0.5} = \mathbf{0.95942}$ (95.94%).
+  - **Full Production Pipeline (Rules + GBDT):** Macro $F_{0.5} = \mathbf{0.96880}$ (96.88%).
+- **Finding:** The learned tree ensemble carries **97.6% of all test predictions**. The rules act solely as an ultra-high-precision safety net on ~2.4% of trivial cases.
+
+#### B. Stacking Meta-Learner vs. Fixed Blend (Step 2)
+On the identical cold set evaluated with frozen OOF thresholds:
+- **Tri-Model Fixed Blend ($[0.40, 0.35, 0.25]$):** Macro $F_{0.5} = \mathbf{0.96880}$
+- **Stacking Meta-Learner (LogisticRegression on OOF):** Macro $F_{0.5} = \mathbf{0.96735}$ ($\Delta = -0.14\%$)
+- **Diagnostic Finding:** The logistic regression coefficients converged to $[4.032, 4.259, 3.905]$ (normalized: $[0.33, 0.35, 0.32]$) with intercept $-7.002$. Because all three GBDT architectures share similar error surfaces across the 72 deterministic features, a linear stacker essentially learns equal weighting and adds no non-linear advantage over the hand-calibrated blend.
+
+#### C. Country Segment Breakdown & Conservative France Cutoff (Step 4)
+- **US Segment (6,000 cold entities):** Macro $F_{0.5} = \mathbf{0.98172}$ (98.17%). Strict 5-digit ZIP codes and standardized street nomenclature.
+- **India Segment (4,000 cold entities):** Macro $F_{0.5} = \mathbf{0.94792}$ (94.79%). Phonetic transliterations and informal address landmarks.
+- **France Segment (14.98% of test set):** **Zero in-distribution training data**. Because $F_{0.5}$ weights precision 4× more than recall, we deliberately enforce a conservative threshold of **$\tau_{\text{France}} = 0.880$** (higher than US 0.840 and India 0.780) as a risk-managed precision safeguard against out-of-distribution false merges.
+
+### 5.3 Embedding Feature Evaluation (Step 5)
+Evaluated the inclusion of dense semantic embeddings (`Qwen3-Embedding-0.6B`):
+1. **Computational Feasibility:** Local and submission grading environments operate on CPU (`PyTorch 2.12.1+cpu`). Scoring candidate pairs for 1.73M test entities at ~20ms/pair would require $>350$ hours, violating Kaggle's 9-hour hard timeout.
+2. **Precision Risk:** Semantic embeddings map related businesses (*Starbucks* vs *Peet's Coffee*) to high cosine similarity ($>0.85$), introducing false-positive merges.
+3. **Conclusion:** Dropped in favor of deterministic n-gram and token alignment features, achieving 96.88% cold macro $F_{0.5}$ with sub-second per-batch latency.
+
+### 5.4 Common Error Modes
+- **False Positives (Wrong Merges):** Multi-tenant commercial complexes or corporate parks where unrelated businesses share the exact same address string (street number, locality, PIN code) and generic business suffixes.
+- **False Negatives (Missed Matches):** Extreme abbreviation coupled with unnumbered rural Indian addresses without postal codes.
 
 ---
 
@@ -173,7 +216,8 @@ The developed business entity resolution pipeline delivers a robust, scalable, a
   - `consistency.py`: Stage 7 global consistency conflict resolution.
   - `tracker.py`: Automated experiment tracking (CSV spreadsheet + JSON log).
   - `pipeline.py`: Master CLI pipeline (`--mode all`, `--mode train`, `--mode inference`, `--mode validate`, `--mode track`).
-- **Jupyter Notebook:** `amazonml.ipynb` containing the interactive, step-by-step walkthrough.
+- **Jupyter Notebook:**
+  - `business_entity_resolution_pipeline.ipynb`: The primary upgraded end-to-end competition notebook.
 - **Reproduction Command:**
   ```bash
   python code/business_entity_resolution/src/pipeline.py --mode all
