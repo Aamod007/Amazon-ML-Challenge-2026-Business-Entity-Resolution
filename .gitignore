@@ -19,3 +19,5 @@ catboost_info/
 # Git LFS or large outputs (>100MB)
 output/candidate_pairs.tsv
 student_resource/output/candidate_pairs.tsv
+matching_results*.tsv
+*copy.tsv
