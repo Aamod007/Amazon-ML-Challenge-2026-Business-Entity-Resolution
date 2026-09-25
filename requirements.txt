@@ -1,0 +1,10 @@
+numpy>=2.0.0
+pandas>=2.0.0
+polars>=1.44.0
+scipy>=1.15.0
+scikit-learn>=1.6.0
+xgboost>=3.0.0
+lightgbm>=4.0.0
+catboost>=1.2.0
+rapidfuzz>=3.10.0
+anyascii>=0.3.3
