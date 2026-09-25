@@ -19,6 +19,10 @@ from collections import defaultdict, Counter
 from typing import Dict, List, Set, Tuple, Any, Optional
 import numpy as np
 import pandas as pd
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Ensure src directory is in sys.path for direct script execution
 _src_dir = os.path.dirname(os.path.abspath(__file__))

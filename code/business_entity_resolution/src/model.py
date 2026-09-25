@@ -22,7 +22,11 @@ Implements:
 import os
 import json
 import numpy as np
+import warnings
 from typing import Dict, List, Tuple, Any, Optional
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 from sklearn.model_selection import GroupKFold
 
 import xgboost as xgb
