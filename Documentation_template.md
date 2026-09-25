@@ -173,7 +173,7 @@ The developed business entity resolution pipeline delivers a robust, scalable, a
   - `consistency.py`: Stage 7 global consistency conflict resolution.
   - `tracker.py`: Automated experiment tracking (CSV spreadsheet + JSON log).
   - `pipeline.py`: Master CLI pipeline (`--mode all`, `--mode train`, `--mode inference`, `--mode validate`, `--mode track`).
-- **Jupyter Notebook:** `business_entity_resolution_pipeline.ipynb` containing the interactive, step-by-step walkthrough.
+- **Jupyter Notebook:** `amazonml.ipynb` containing the interactive, step-by-step walkthrough.
 - **Reproduction Command:**
   ```bash
   python code/business_entity_resolution/src/pipeline.py --mode all
