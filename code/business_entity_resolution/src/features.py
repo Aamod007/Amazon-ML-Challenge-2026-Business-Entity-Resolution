@@ -67,18 +67,18 @@ def compute_pair_features(rec1: Any, rec2: Any) -> List[float]:
     rec1: Source 1 normalized record (Record or dict)
     rec2: Candidate (Source 2 or Source 3) normalized record (Record or dict)
     """
-    n1 = rec1["norm_name"]
-    n2 = rec2["norm_name"]
-    rn1 = rec1["root_name"]
-    rn2 = rec2["root_name"]
+    n1 = rec1.get("norm_name", "")
+    n2 = rec2.get("norm_name", "")
+    rn1 = rec1.get("root_name", "")
+    rn2 = rec2.get("root_name", "")
     
     an1 = rec1.get("ascii_name") or n1
     an2 = rec2.get("ascii_name") or n2
     arn1 = rec1.get("ascii_root") or rn1
     arn2 = rec2.get("ascii_root") or rn2
 
-    a1 = rec1["norm_address"]
-    a2 = rec2["norm_address"]
+    a1 = rec1.get("norm_address", "")
+    a2 = rec2.get("norm_address", "")
 
     # -------------------------------------------------------------------------
     # 1. Name Similarity Measures (Raw & Transliterated Latin ASCII)
@@ -146,8 +146,8 @@ def compute_pair_features(rec1: Any, rec2: Any) -> List[float]:
     # -------------------------------------------------------------------------
     # 2. Legal Suffix Agreement
     # -------------------------------------------------------------------------
-    both_suffix = 1.0 if (rec1["had_legal_suffix"] and rec2["had_legal_suffix"]) else 0.0
-    suffix_match = 1.0 if (both_suffix and rec1["legal_suffix"] == rec2["legal_suffix"]) else 0.0
+    both_suffix = 1.0 if (rec1.get("had_legal_suffix", False) and rec2.get("had_legal_suffix", False)) else 0.0
+    suffix_match = 1.0 if (both_suffix and rec1.get("legal_suffix", "") == rec2.get("legal_suffix", "")) else 0.0
 
     # -------------------------------------------------------------------------
     # 3. Address Similarity Measures
@@ -176,8 +176,8 @@ def compute_pair_features(rec1: Any, rec2: Any) -> List[float]:
     # -------------------------------------------------------------------------
     # 4. Structured Subfield Agreement Flags
     # -------------------------------------------------------------------------
-    pc1 = str(rec1["postal_code"] or "").strip()
-    pc2 = str(rec2["postal_code"] or "").strip()
+    pc1 = str(rec1.get("postal_code") or "").strip()
+    pc2 = str(rec2.get("postal_code") or "").strip()
     if pc1 and pc2:
         pc_exact = 1.0 if pc1 == pc2 else 0.0
         pc_mismatch = 1.0 if pc1 != pc2 else 0.0
@@ -191,8 +191,8 @@ def compute_pair_features(rec1: Any, rec2: Any) -> List[float]:
         pc_prefix_3 = 0.0
         pc_prefix_2 = 0.0
         
-    sn1 = str(rec1["street_num"] or "").strip()
-    sn2 = str(rec2["street_num"] or "").strip()
+    sn1 = str(rec1.get("street_num") or "").strip()
+    sn2 = str(rec2.get("street_num") or "").strip()
     if sn1 and sn2:
         sn_exact = 1.0 if sn1 == sn2 else 0.0
         sn_mismatch = 1.0 if sn1 != sn2 else 0.0
@@ -207,8 +207,8 @@ def compute_pair_features(rec1: Any, rec2: Any) -> List[float]:
         sn_signed = 0.0
         sn_diff_log = 0.0
 
-    lm1 = rec1["landmark"]
-    lm2 = rec2["landmark"]
+    lm1 = rec1.get("landmark", "")
+    lm2 = rec2.get("landmark", "")
     lm_match = 1.0 if (lm1 and lm2 and fuzz.ratio(lm1, lm2) > 80) else 0.0
 
     # Domain / URL sub-match (handles e.g. name matching website URL)
